@@ -5,8 +5,16 @@ import { isAuthorizedEmail } from "@/lib/authorized-users";
 
 export async function middleware(request: NextRequest) {
   const response = NextResponse.next({ request: { headers: request.headers } });
+  const pathname = request.nextUrl.pathname;
+  const isPublicRoute = pathname === "/login";
 
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    if (process.env.NODE_ENV === "production" && !isPublicRoute) {
+      const redirectUrl = new URL("/login", request.url);
+      redirectUrl.searchParams.set("error", "auth-unavailable");
+      return NextResponse.redirect(redirectUrl);
+    }
+
     return response;
   }
 
@@ -29,8 +37,6 @@ export async function middleware(request: NextRequest) {
   );
 
   const { data } = await supabase.auth.getUser();
-  const pathname = request.nextUrl.pathname;
-  const isPublicRoute = pathname === "/login";
 
   if (!data.user && !isPublicRoute) {
     return NextResponse.redirect(new URL("/login", request.url));

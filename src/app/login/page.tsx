@@ -36,6 +36,9 @@ function LoginForm() {
     if (errorType === "unauthorized-email") {
       return "This account is not authorized for the Solar Client Management portal.";
     }
+    if (errorType === "auth-unavailable") {
+      return "Authentication is not configured. Please contact the system administrator.";
+    }
     return null;
   }, [params]);
 
