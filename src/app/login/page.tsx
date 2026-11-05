@@ -1,14 +1,43 @@
 "use client";
 
 import { Eye, EyeOff, LockKeyhole, Mail, SunMedium } from "lucide-react";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useMemo, useState } from "react";
 
 import { signInAction } from "@/app/actions/auth";
 
 export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginLoadingState />}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginLoadingState() {
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-[#F7F8FA] p-6">
+      <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-8 text-center shadow-[0_22px_80px_rgba(15,23,42,0.08)]">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Loading</p>
+        <h2 className="mt-3 text-2xl font-semibold text-slate-900">Preparing sign in</h2>
+      </div>
+    </main>
+  );
+}
+
+function LoginForm() {
+  const params = useSearchParams();
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  const queryError = useMemo(() => {
+    const errorType = params.get("error");
+    if (errorType === "unauthorized-email") {
+      return "This account is not authorized for the Solar Client Management portal.";
+    }
+    return null;
+  }, [params]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -26,6 +55,8 @@ export default function LoginPage() {
 
     setPending(false);
   }
+
+  const displayError = queryError ?? error;
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#F7F8FA] p-6">
@@ -116,9 +147,9 @@ export default function LoginPage() {
                   </a>
                 </div>
 
-                {error ? (
+                {displayError ? (
                   <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                    {error}
+                    {displayError}
                   </div>
                 ) : null}
 

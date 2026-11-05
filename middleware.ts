@@ -1,6 +1,8 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { isAuthorizedEmail } from "@/lib/authorized-users";
+
 export async function middleware(request: NextRequest) {
   const response = NextResponse.next({ request: { headers: request.headers } });
 
@@ -34,8 +36,16 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  if (data.user && pathname === "/login") {
-    return NextResponse.redirect(new URL("/customers", request.url));
+  if (data.user) {
+    if (!isAuthorizedEmail(data.user.email)) {
+      const redirectUrl = new URL("/login", request.url);
+      redirectUrl.searchParams.set("error", "unauthorized-email");
+      return NextResponse.redirect(redirectUrl);
+    }
+
+    if (pathname === "/login") {
+      return NextResponse.redirect(new URL("/customers", request.url));
+    }
   }
 
   return response;

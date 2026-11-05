@@ -1,23 +1,23 @@
 const settingsCards = [
   {
+    title: "Admin access",
+    description: "Only the approved solar administration accounts can sign in to this portal.",
+    status: "Restricted",
+  },
+  {
     title: "Google Drive",
-    description: "Connect Google account, review permissions, and manage folder configuration.",
-    status: "Connected",
+    description: "Connect the approved operational account and review the linked customer document folders.",
+    status: "Planned",
   },
   {
     title: "Google Sheets",
-    description: "Check workbook setup, queue health, and retry failed synchronization tasks.",
-    status: "Queued",
+    description: "Check workbook connectivity and the sync queue for the customer and financial reporting flow.",
+    status: "Planned",
   },
   {
-    title: "Rate Management",
-    description: "Maintain panel brands, wattages, effective dates, and disun rates.",
+    title: "Rate & pricing",
+    description: "Maintain approved rates and operational pricing for the solar project pipeline.",
     status: "Active",
-  },
-  {
-    title: "User Management",
-    description: "Create users, adjust permissions, and manage role-based access controls.",
-    status: "Secure",
   },
 ];
 
@@ -27,6 +27,9 @@ export default function SettingsPage() {
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Administration</p>
         <h1 className="mt-1 text-2xl font-semibold text-slate-900">System Settings</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-600">
+          This portal is configured for two full-admin accounts only, with no additional staff or manager hierarchy.
+        </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
