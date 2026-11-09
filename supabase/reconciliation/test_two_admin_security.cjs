@@ -43,6 +43,129 @@ const WORKER_RPC_STATE_QUERY = `
   ORDER BY p.proname;
 `;
 
+async function assertTriggerFunctionsNotDirectlyExecutable(
+  db,
+  role,
+  claimRole,
+  email,
+  subject,
+) {
+  await db.exec(`SET ROLE ${role}`);
+  await db.query(
+    `SELECT set_config('request.jwt.claim.role', $1, false),
+      set_config('request.jwt.claim.email', $2, false),
+      set_config('request.jwt.claim.sub', $3, false)`,
+    [claimRole, email, subject],
+  );
+  for (const signature of ["public.handle_new_user()", "public.customers_guard()"]) {
+    await assert.rejects(
+      db.query(`SELECT ${signature}`),
+      /permission denied|trigger functions can only be called as triggers/i,
+      `${role} must not directly invoke ${signature}`,
+    );
+  }
+  await db.exec("RESET ROLE");
+}
+
+async function captureRollbackState(db) {
+  const functions = await db.query(`
+    SELECT p.oid::regprocedure::text AS signature,
+      pg_catalog.pg_get_functiondef(p.oid) AS definition,
+      pg_catalog.pg_get_userbyid(p.proowner) AS owner,
+      p.prosecdef AS security_definer,
+      p.proconfig AS settings,
+      p.proacl::text AS acl,
+      p.provolatile AS volatility,
+      l.lanname AS language
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+    WHERE n.nspname = 'public'
+    ORDER BY signature;
+  `);
+  const relations = await db.query(`
+    SELECT c.oid::regclass::text AS name,
+      c.relkind,
+      pg_catalog.pg_get_userbyid(c.relowner) AS owner,
+      c.relacl::text AS acl,
+      c.relrowsecurity AS rls_enabled,
+      c.relforcerowsecurity AS force_rls
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = ANY (ARRAY[
+        'profiles', 'customers', 'customer_details', 'activity_logs', 'sync_queue',
+        'activity_logs_id_seq', 'customer_serial_seq', 'sync_queue_id_seq'
+      ])
+    ORDER BY name;
+  `);
+  const columnAcls = await db.query(`
+    SELECT c.relname AS table_name, a.attname AS column_name, a.attacl::text AS acl
+    FROM pg_catalog.pg_attribute a
+    JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public'
+      AND c.relname = ANY (ARRAY[
+        'profiles', 'customers', 'customer_details', 'activity_logs', 'sync_queue'
+      ])
+      AND a.attnum > 0 AND NOT a.attisdropped
+    ORDER BY table_name, a.attnum;
+  `);
+  const policies = await db.query(`
+    SELECT schemaname, tablename, policyname, permissive, roles, cmd, qual, with_check
+    FROM pg_catalog.pg_policies
+    WHERE schemaname = 'public'
+    ORDER BY tablename, policyname;
+  `);
+  const triggers = await db.query(`
+    SELECT n.nspname AS schema_name, c.relname AS table_name,
+      t.tgname AS trigger_name, t.tgenabled AS enabled,
+      pg_catalog.pg_get_triggerdef(t.oid) AS definition
+    FROM pg_catalog.pg_trigger t
+    JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE NOT t.tgisinternal AND n.nspname IN ('public', 'auth')
+    ORDER BY schema_name, table_name, trigger_name;
+  `);
+  const indexes = await db.query(`
+    SELECT tablename, indexname, indexdef
+    FROM pg_catalog.pg_indexes
+    WHERE schemaname = 'public'
+    ORDER BY tablename, indexname;
+  `);
+  const profiles = await db.query(`
+    SELECT user_id::text, full_name, email, role::text, active, created_at, updated_at
+    FROM public.profiles
+    ORDER BY user_id;
+  `);
+  const audit = await db.query(`
+    SELECT COALESCE(
+      jsonb_agg(to_jsonb(row_data) ORDER BY row_data.id),
+      '[]'::jsonb
+    ) AS rows
+    FROM public.activity_logs row_data;
+  `);
+  const syncQueue = await db.query(`
+    SELECT COALESCE(
+      jsonb_agg(to_jsonb(row_data) ORDER BY row_data.id),
+      '[]'::jsonb
+    ) AS rows
+    FROM public.sync_queue row_data;
+  `);
+
+  return {
+    functions: functions.rows,
+    relations: relations.rows,
+    columnAcls: columnAcls.rows,
+    policies: policies.rows,
+    triggers: triggers.rows,
+    indexes: indexes.rows,
+    profiles: profiles.rows,
+    audit: audit.rows,
+    syncQueue: syncQueue.rows,
+  };
+}
+
 const liveSchema = `
   CREATE ROLE anon NOLOGIN;
   CREATE ROLE authenticated NOLOGIN;
@@ -1075,14 +1198,61 @@ async function main() {
     const guardExecGrants = await db.query(`
       SELECT
         has_function_privilege('anon', 'public.customers_guard()', 'EXECUTE') AS anon_can_execute,
+        has_function_privilege('authenticated', 'public.customers_guard()', 'EXECUTE') AS authenticated_can_execute,
         has_function_privilege('service_role', 'public.customers_guard()', 'EXECUTE') AS service_role_can_execute,
         has_function_privilege('postgres', 'public.customers_guard()', 'EXECUTE') AS postgres_can_execute;
     `);
     assert.deepEqual(guardExecGrants.rows[0], {
       anon_can_execute: false,
-      service_role_can_execute: true,
+      authenticated_can_execute: false,
+      service_role_can_execute: false,
       postgres_can_execute: true,
     });
+    const signupExecGrants = await db.query(`
+      SELECT
+        has_function_privilege('anon', 'public.handle_new_user()', 'EXECUTE') AS anon_can_execute,
+        has_function_privilege('authenticated', 'public.handle_new_user()', 'EXECUTE') AS authenticated_can_execute,
+        has_function_privilege('service_role', 'public.handle_new_user()', 'EXECUTE') AS service_role_can_execute,
+        has_function_privilege('postgres', 'public.handle_new_user()', 'EXECUTE') AS postgres_can_execute;
+    `);
+    assert.deepEqual(signupExecGrants.rows[0], {
+      anon_can_execute: false,
+      authenticated_can_execute: false,
+      service_role_can_execute: false,
+      postgres_can_execute: true,
+    });
+    for (const role of ["anon", "authenticated", "service_role"]) {
+      assert.equal(guardExecGrants.rows[0][`${role}_can_execute`], false);
+      assert.equal(signupExecGrants.rows[0][`${role}_can_execute`], false);
+    }
+    await assertTriggerFunctionsNotDirectlyExecutable(
+      db,
+      "anon",
+      "anon",
+      "",
+      "",
+    );
+    await assertTriggerFunctionsNotDirectlyExecutable(
+      db,
+      "authenticated",
+      "authenticated",
+      EMAILS.unauthorized,
+      "33333333-3333-4333-8333-333333333333",
+    );
+    await assertTriggerFunctionsNotDirectlyExecutable(
+      db,
+      "authenticated",
+      "authenticated",
+      EMAILS.second,
+      "d2914556-10a7-4954-8ee0-8cdbdb649830",
+    );
+    await assertTriggerFunctionsNotDirectlyExecutable(
+      db,
+      "service_role",
+      "service_role",
+      "",
+      "",
+    );
 
     const serialHelper = await db.query(`
       SELECT count(*)::int AS count
@@ -1222,6 +1392,11 @@ async function main() {
       )).id::text AS id`,
     );
     const customerId = created.rows[0].id;
+    await db.exec("RESET ROLE");
+    const serialBeforePrivilegeBoundaryChecks = await db.query(
+      "SELECT last_value, is_called FROM public.customer_serial_seq",
+    );
+    await db.exec("SET ROLE authenticated");
     const customer = await db.query(
       "SELECT serial_no, customer_code, name, contract_value, created_by::text FROM public.customers WHERE id = $1",
       [customerId],
@@ -1264,6 +1439,14 @@ async function main() {
     }
 
     await db.exec("RESET ROLE");
+    const serialAfterUnauthorizedAttempts = await db.query(
+      "SELECT last_value, is_called FROM public.customer_serial_seq",
+    );
+    assert.deepEqual(
+      serialAfterUnauthorizedAttempts.rows,
+      serialBeforePrivilegeBoundaryChecks.rows,
+      "unapproved authenticated identities must not consume customer serials",
+    );
     const crossIdentityUnchangedCustomer = await db.query(
       "SELECT name FROM public.customers WHERE id = $1",
       [customerId],
@@ -1341,6 +1524,24 @@ async function main() {
       role: "admin",
       active: false,
     });
+    await db.exec("RESET ROLE");
+    const unchangedCustomerAfterInactiveAdminAttempts = await db.query(
+      "SELECT name, contract_value FROM public.customers WHERE id = $1",
+      [customerId],
+    );
+    assert.equal(unchangedCustomerAfterInactiveAdminAttempts.rows[0].name, "Exact Behavior");
+    assert.equal(
+      Number(unchangedCustomerAfterInactiveAdminAttempts.rows[0].contract_value),
+      1200,
+    );
+    const serialAfterInactiveAdminAttempts = await db.query(
+      "SELECT last_value, is_called FROM public.customer_serial_seq",
+    );
+    assert.deepEqual(
+      serialAfterInactiveAdminAttempts.rows,
+      serialBeforePrivilegeBoundaryChecks.rows,
+      "inactive Admin must not consume customer serials",
+    );
     await db.exec("SET ROLE authenticated");
 
     await db.query(
@@ -1728,6 +1929,7 @@ async function main() {
     console.log("PASS: literal %, _, and backslash searches match only their intended customer records");
     console.log("PASS: both approved admins create customers with consecutive numbers and update customer data");
     console.log("PASS: direct serial allocation and trigger-function execution are denied");
+    console.log("PASS: anon, authenticated (including inactive Admin), and service_role cannot directly execute trigger functions");
     console.log("PASS: activity and sync triggers record customer and details changes");
     console.log("PASS: customer_details audit uses the exact plural entity type; INSERT and UPDATE enqueue, DELETE does not");
     console.log("PASS: anonymous and authenticated sequence privileges are revoked");
@@ -1735,12 +1937,17 @@ async function main() {
     console.log("PASS: service_role JWT with no email can insert through the trigger and audit/sync remain functional");
     console.log("PASS: postgres with cleared JWT claims is denied by the trigger with SQLSTATE 42501");
     console.log("PASS: unauthorized database access, modification, and signup are denied");
+    console.log("PASS: unapproved identities and inactive Admin cannot alter customers or consume serial numbers");
   } finally {
     await db.close();
   }
 
   await testNoApprovedAdminState(draft);
   console.log("PASS: no-approved-admin state preserves legacy profiles while RLS denies access");
+  await testProfileRollback(draft);
+  console.log("PASS: rollback restores the pre-deployment inactive Staff profile while retaining the other active Admin");
+  await testAtomicRollback(draft);
+  console.log("PASS: transaction rollback restores function definitions/owners/settings/ACLs, table/column grants and RLS, triggers, indexes, profiles, audit, and sync data");
 }
 
 async function testNoApprovedAdminState(draft) {
@@ -1773,6 +1980,95 @@ async function testNoApprovedAdminState(draft) {
     );
     assert.equal(visibleProfiles.rows[0].count, 0);
     assert.equal(visibleCustomers.rows[0].count, 0);
+  } finally {
+    await db.close();
+  }
+}
+
+async function testProfileRollback(draft) {
+  const db = new PGlite();
+  try {
+    await db.exec(liveSchema);
+    await db.exec(`
+      INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
+        ('6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f', '${EMAILS.first}', '{"full_name":"Admin One"}'),
+        ('d2914556-10a7-4954-8ee0-8cdbdb649830', '${EMAILS.second}', '{"full_name":"Admin Two"}');
+
+      CREATE TEMP TABLE predeployment_profile_snapshot ON COMMIT PRESERVE ROWS AS
+      SELECT user_id, full_name, email, role, active
+      FROM public.profiles
+      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+    `);
+
+    const before = await db.query(`
+      SELECT role::text, active
+      FROM public.profiles
+      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+    `);
+    assert.deepEqual(before.rows[0], { role: "staff", active: false });
+
+    await db.exec(draft);
+    const afterMigration = await db.query(`
+      SELECT role::text, active
+      FROM public.profiles
+      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+    `);
+    assert.deepEqual(afterMigration.rows[0], { role: "admin", active: true });
+
+    await db.exec(`
+      BEGIN;
+      UPDATE public.profiles p
+      SET full_name = snapshot.full_name,
+          email = snapshot.email,
+          role = snapshot.role,
+          active = snapshot.active
+      FROM predeployment_profile_snapshot snapshot
+      WHERE p.user_id = snapshot.user_id;
+      COMMIT;
+    `);
+    const restored = await db.query(`
+      SELECT full_name, email, role::text, active
+      FROM public.profiles
+      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+    `);
+    assert.deepEqual(restored.rows[0], {
+      full_name: "Admin Two",
+      email: EMAILS.second,
+      role: "staff",
+      active: false,
+    });
+
+    const retainedAdmin = await db.query(`
+      SELECT role::text, active
+      FROM public.profiles
+      WHERE user_id = '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f';
+    `);
+    assert.deepEqual(retainedAdmin.rows[0], { role: "admin", active: true });
+  } finally {
+    await db.close();
+  }
+}
+
+async function testAtomicRollback(draft) {
+  const db = new PGlite();
+  try {
+    await db.exec(liveSchema);
+    await db.exec(`
+      ALTER FUNCTION public.customers_guard() SET search_path = '';
+      INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
+        ('6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f', '${EMAILS.first}', '{"full_name":"Admin One"}'),
+        ('d2914556-10a7-4954-8ee0-8cdbdb649830', '${EMAILS.second}', '{"full_name":"Admin Two"}');
+    `);
+
+    const before = await captureRollbackState(db);
+
+    await db.exec("BEGIN");
+    await db.exec(draft);
+    await assert.rejects(db.exec("SELECT 1 / 0"), /division by zero/i);
+    await db.exec("ROLLBACK");
+
+    const after = await captureRollbackState(db);
+    assert.deepEqual(after, before);
   } finally {
     await db.close();
   }

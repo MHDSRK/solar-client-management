@@ -122,8 +122,11 @@ END;
 $function$;
 
 REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.handle_new_user() TO postgres, service_role;
+REVOKE EXECUTE ON FUNCTION public.handle_new_user() FROM service_role;
+GRANT EXECUTE ON FUNCTION public.handle_new_user() TO postgres;
 
+-- SECURITY DEFINER lets the guard allocate the serial without granting API roles
+-- direct sequence access. The caller is authorized before any sequence use or row change.
 CREATE OR REPLACE FUNCTION public.customers_guard()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -188,8 +191,8 @@ END;
 $function$;
 
 ALTER FUNCTION public.customers_guard() OWNER TO postgres;
-REVOKE ALL ON FUNCTION public.customers_guard() FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.customers_guard() TO postgres, service_role;
+REVOKE ALL ON FUNCTION public.customers_guard() FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.customers_guard() TO postgres;
 
 CREATE OR REPLACE FUNCTION public.create_customer(
   p_name text,
