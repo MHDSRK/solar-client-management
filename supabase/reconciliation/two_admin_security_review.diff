@@ -1,0 +1,954 @@
+﻿diff --git a/supabase/reconciliation/20261105125000_two_admin_security.sql b/supabase/reconciliation/20261105125000_two_admin_security.sql
+index 38710cc..65bf0a7 100644
+--- a/supabase/reconciliation/20261105125000_two_admin_security.sql
++++ b/supabase/reconciliation/20261105125000_two_admin_security.sql
+@@ -5,21 +5,57 @@ CREATE OR REPLACE FUNCTION public.is_authorized_admin_user()
+ RETURNS boolean
+ LANGUAGE sql
+ STABLE
+-SECURITY INVOKER
++SECURITY DEFINER
+ SET search_path = ''
+ AS $function$
+-  SELECT pg_catalog.lower(pg_catalog.btrim(COALESCE(auth.email(), ''))) = ANY (
+-    ARRAY[
+-      'solar.disunenergy@gmail.com',
+-      'mhdsharookh@gmail.com'
+-    ]
+-  );
++  SELECT
++    auth.uid() = ANY (
++      ARRAY[
++        '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++        'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++      ]
++    )
++    AND EXISTS (
++      SELECT 1
++      FROM public.profiles p
++      WHERE p.user_id = auth.uid()
++        AND p.active
++        AND p.role = 'admin'::public.app_role
++    );
+ $function$;
+ 
++ALTER FUNCTION public.is_authorized_admin_user() OWNER TO postgres;
+ REVOKE EXECUTE ON FUNCTION public.is_authorized_admin_user() FROM PUBLIC, anon;
+ GRANT EXECUTE ON FUNCTION public.is_authorized_admin_user()
+   TO authenticated, service_role, postgres;
+ 
++CREATE OR REPLACE FUNCTION public.sync_profile_email_from_auth_user()
++RETURNS trigger
++LANGUAGE plpgsql
++SECURITY DEFINER
++SET search_path = ''
++AS $function$
++BEGIN
++  UPDATE public.profiles
++  SET email = NEW.email
++  WHERE user_id = NEW.id
++    AND email IS DISTINCT FROM NEW.email;
++
++  RETURN NEW;
++END;
++$function$;
++
++ALTER FUNCTION public.sync_profile_email_from_auth_user() OWNER TO postgres;
++REVOKE EXECUTE ON FUNCTION public.sync_profile_email_from_auth_user()
++  FROM PUBLIC, anon, authenticated, service_role;
++GRANT EXECUTE ON FUNCTION public.sync_profile_email_from_auth_user() TO postgres;
++
++DROP TRIGGER IF EXISTS auth_users_sync_profile_email ON auth.users;
++CREATE TRIGGER auth_users_sync_profile_email
++  AFTER UPDATE OF email ON auth.users
++  FOR EACH ROW
++  EXECUTE FUNCTION public.sync_profile_email_from_auth_user();
++
+ CREATE OR REPLACE FUNCTION public.handle_new_user()
+ RETURNS trigger
+ LANGUAGE plpgsql
+@@ -27,11 +63,11 @@ SECURITY DEFINER
+ SET search_path = ''
+ AS $function$
+ BEGIN
+-  IF pg_catalog.lower(pg_catalog.btrim(COALESCE(NEW.email, ''))) <> ALL (
++  IF NEW.id <> ALL (
+     ARRAY[
+-      'solar.disunenergy@gmail.com',
+-      'mhdsharookh@gmail.com'
+-    ]
++      '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++      'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++    ]::uuid[]
+   ) THEN
+     RAISE EXCEPTION 'This account is not authorized for the Solar Client Management portal.'
+       USING ERRCODE = '42501';
+@@ -61,11 +97,11 @@ BEGIN
+   UPDATE public.profiles
+   SET role = 'staff'::public.app_role,
+       active = false
+-  WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
++  WHERE user_id <> ALL (
+       ARRAY[
+-        'solar.disunenergy@gmail.com',
+-        'mhdsharookh@gmail.com'
+-      ]
++        '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++        'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++      ]::uuid[]
+     )
+     AND (role <> 'staff'::public.app_role OR active)
+     AND EXISTS (
+@@ -73,11 +109,11 @@ BEGIN
+       FROM public.profiles p
+       WHERE p.role = 'admin'::public.app_role
+         AND p.active
+-        AND pg_catalog.lower(pg_catalog.btrim(COALESCE(p.email, ''))) = ANY (
++        AND p.user_id = ANY (
+           ARRAY[
+-            'solar.disunenergy@gmail.com',
+-            'mhdsharookh@gmail.com'
+-          ]
++            '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++            'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++          ]::uuid[]
+         )
+     );
+ 
+@@ -321,11 +357,11 @@ SELECT
+   'admin'::public.app_role,
+   true
+ FROM auth.users u
+-WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(u.email, ''))) = ANY (
++WHERE u.id = ANY (
+   ARRAY[
+-    'solar.disunenergy@gmail.com',
+-    'mhdsharookh@gmail.com'
+-  ]
++    '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++    'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++  ]::uuid[]
+ )
+ ON CONFLICT (user_id) DO UPDATE
+ SET full_name = COALESCE(EXCLUDED.full_name, public.profiles.full_name),
+@@ -341,11 +377,11 @@ WHERE public.profiles.full_name IS DISTINCT FROM EXCLUDED.full_name
+ UPDATE public.profiles
+ SET role = 'staff'::public.app_role,
+     active = false
+-WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
++WHERE user_id <> ALL (
+     ARRAY[
+-      'solar.disunenergy@gmail.com',
+-      'mhdsharookh@gmail.com'
+-    ]
++      '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++      'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++    ]::uuid[]
+   )
+   AND (role <> 'staff'::public.app_role OR active)
+   AND EXISTS (
+@@ -353,11 +389,11 @@ WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
+     FROM public.profiles p
+     WHERE p.role = 'admin'::public.app_role
+       AND p.active
+-      AND pg_catalog.lower(pg_catalog.btrim(COALESCE(p.email, ''))) = ANY (
++      AND p.user_id = ANY (
+         ARRAY[
+-          'solar.disunenergy@gmail.com',
+-          'mhdsharookh@gmail.com'
+-        ]
++          '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
++          'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
++        ]::uuid[]
+       )
+   );
+ 
+@@ -430,6 +466,7 @@ CREATE POLICY sync_queue_select ON public.sync_queue
+ REVOKE ALL ON TABLE public.profiles, public.customers, public.customer_details,
+   public.activity_logs, public.sync_queue FROM PUBLIC, anon, authenticated;
+ GRANT SELECT ON TABLE public.profiles TO authenticated;
++GRANT UPDATE (full_name, role, active) ON TABLE public.profiles TO authenticated;
+ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.customers TO authenticated;
+ GRANT SELECT, INSERT, UPDATE ON TABLE public.customer_details TO authenticated;
+ GRANT SELECT ON TABLE public.activity_logs, public.sync_queue TO authenticated;
+diff --git a/supabase/reconciliation/test_two_admin_security.cjs b/supabase/reconciliation/test_two_admin_security.cjs
+index 4695e19..28e40b0 100644
+--- a/supabase/reconciliation/test_two_admin_security.cjs
++++ b/supabase/reconciliation/test_two_admin_security.cjs
+@@ -501,9 +501,9 @@ const liveSchema = `
+     FOR EACH ROW EXECUTE FUNCTION public.customers_guard();
+   CREATE TRIGGER customers_set_updated_at BEFORE UPDATE ON public.customers
+     FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+-  CREATE TRIGGER customer_details_audit AFTER INSERT OR DELETE OR UPDATE ON public.customer_details
+-    FOR EACH ROW EXECUTE FUNCTION public.log_change('customer_detail', 'customer_id');
+-  CREATE TRIGGER customer_details_enqueue_sync AFTER INSERT OR DELETE OR UPDATE ON public.customer_details
++  CREATE TRIGGER customer_details_audit AFTER INSERT OR UPDATE OR DELETE ON public.customer_details
++    FOR EACH ROW EXECUTE FUNCTION public.log_change('customer_details', 'customer_id');
++  CREATE TRIGGER customer_details_enqueue_sync AFTER INSERT OR UPDATE ON public.customer_details
+     FOR EACH ROW EXECUTE FUNCTION public.enqueue_customer_sync();
+   CREATE TRIGGER activity_logs_no_truncate BEFORE TRUNCATE ON public.activity_logs
+     FOR EACH STATEMENT EXECUTE FUNCTION public.activity_logs_block_mutation();
+@@ -558,6 +558,7 @@ const liveSchema = `
+     USING ((SELECT public.current_app_role()) = 'admin'::public.app_role);
+ 
+   GRANT SELECT ON TABLE public.profiles TO authenticated;
++  GRANT UPDATE (full_name, role, active) ON TABLE public.profiles TO authenticated;
+   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.customers TO authenticated;
+   GRANT SELECT, INSERT, UPDATE ON TABLE public.customer_details TO authenticated;
+   GRANT SELECT ON TABLE public.activity_logs, public.sync_queue TO authenticated;
+@@ -595,8 +596,7 @@ async function main() {
+     await db.exec(`
+       INSERT INTO auth.users (id, email, raw_user_meta_data) VALUES
+         ('33333333-3333-4333-8333-333333333333', '${EMAILS.unauthorized}', '{}'),
+-        ('11111111-1111-4111-8111-111111111111', '${EMAILS.first}', '{"full_name":"Admin One"}'),
+-        ('22222222-2222-4222-8222-222222222222', '${EMAILS.second}', '{"full_name":"Admin Two"}');
++        ('6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f', '${EMAILS.first}', '{"full_name":"Admin One"}');
+     `);
+ 
+     const triggerInventoryBefore = await db.query(`
+@@ -625,6 +625,25 @@ async function main() {
+     `);
+ 
+     await db.exec(draft);
++    await db.exec(`
++      INSERT INTO auth.users (id, email, raw_user_meta_data)
++      VALUES (
++        'd2914556-10a7-4954-8ee0-8cdbdb649830',
++        'admin.two.updated@example.com',
++        '{"full_name":"Admin Two"}'
++      );
++    `);
++    const uuidProvisionedProfile = await db.query(`
++      SELECT email, role::text, active
++      FROM public.profiles
++      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
++    `);
++    assert.deepEqual(uuidProvisionedProfile.rows[0], {
++      email: "admin.two.updated@example.com",
++      role: "admin",
++      active: true,
++    });
++
+     const firstRunSideEffects = await db.query(`
+       SELECT
+         (SELECT count(*)::int FROM public.profiles) AS profiles,
+@@ -685,7 +704,46 @@ async function main() {
+       WHERE NOT t.tgisinternal AND n.nspname IN ('public', 'auth')
+       ORDER BY n.nspname, c.relname, t.tgname;
+     `);
+-    assert.deepEqual(triggerInventoryAfter.rows, triggerInventoryBefore.rows);
++    const emailSyncTrigger = triggerInventoryAfter.rows.find(
++      (trigger) => trigger.trigger_name === "auth_users_sync_profile_email",
++    );
++    assert(emailSyncTrigger, "auth.users email synchronization trigger must exist");
++    assert.equal(emailSyncTrigger.schema_name, "auth");
++    assert.equal(emailSyncTrigger.table_name, "users");
++    assert.equal(emailSyncTrigger.enabled, "O");
++    assert.match(emailSyncTrigger.definition, /AFTER UPDATE OF email ON auth\.users/i);
++    assert.match(
++      emailSyncTrigger.definition,
++      /EXECUTE FUNCTION (public\.)?sync_profile_email_from_auth_user\(\)/i,
++    );
++    assert.deepEqual(
++      triggerInventoryAfter.rows.filter(
++        (trigger) => trigger.trigger_name !== "auth_users_sync_profile_email",
++      ),
++      triggerInventoryBefore.rows,
++    );
++
++    const emailSyncFunction = await db.query(`
++      SELECT p.prosecdef AS security_definer,
++        pg_catalog.pg_get_userbyid(p.proowner) AS owner,
++        p.proconfig AS settings,
++        pg_catalog.has_function_privilege('postgres', p.oid, 'EXECUTE') AS postgres_execute,
++        pg_catalog.has_function_privilege('service_role', p.oid, 'EXECUTE') AS service_role_execute,
++        pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE') AS authenticated_execute,
++        pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_execute
++      FROM pg_catalog.pg_proc p
++      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
++      WHERE n.nspname = 'public'
++        AND p.proname = 'sync_profile_email_from_auth_user';
++    `);
++    assert.equal(emailSyncFunction.rows.length, 1);
++    assert.equal(emailSyncFunction.rows[0].security_definer, true);
++    assert.equal(emailSyncFunction.rows[0].owner, "postgres");
++    assert.deepEqual(emailSyncFunction.rows[0].settings, ['search_path=""']);
++    assert.equal(emailSyncFunction.rows[0].postgres_execute, true);
++    assert.equal(emailSyncFunction.rows[0].service_role_execute, false);
++    assert.equal(emailSyncFunction.rows[0].authenticated_execute, false);
++    assert.equal(emailSyncFunction.rows[0].anon_execute, false);
+ 
+     const signaturesAfter = await db.query(`
+       SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS identity_args,
+@@ -703,10 +761,175 @@ async function main() {
+       SELECT count(*)::int AS count
+       FROM public.profiles
+       WHERE role = 'admin' AND active
+-        AND email IN ('${EMAILS.first}', '${EMAILS.second}');
++        AND user_id IN (
++          '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f',
++          'd2914556-10a7-4954-8ee0-8cdbdb649830'
++        );
+     `);
+     assert.equal(adminProfiles.rows[0].count, 2);
+ 
++    await db.query(
++      "UPDATE auth.users SET email = upper(email) WHERE id = $1::uuid",
++      ["6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const caseUpdatedProfile = await db.query(`
++      SELECT email, role::text, active
++      FROM public.profiles
++      WHERE user_id = '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f';
++    `);
++    assert.deepEqual(caseUpdatedProfile.rows[0], {
++      email: EMAILS.first.toUpperCase(),
++      role: "admin",
++      active: true,
++    });
++
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.first.toUpperCase(), "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const caseUpdatedAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(caseUpdatedAuthorization.rows[0].authorized, true);
++    await db.exec("RESET ROLE");
++
++    await db.query(
++      "UPDATE auth.users SET email = $1 WHERE id = $2::uuid",
++      ["solar.admin.updated@example.com", "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const changedEmailProfile = await db.query(`
++      SELECT email, role::text, active
++      FROM public.profiles
++      WHERE user_id = '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f';
++    `);
++    assert.deepEqual(changedEmailProfile.rows[0], {
++      email: "solar.admin.updated@example.com",
++      role: "admin",
++      active: true,
++    });
++
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", "solar.admin.updated@example.com", "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const changedEmailAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(changedEmailAuthorization.rows[0].authorized, true);
++    await db.exec("RESET ROLE");
++
++    await db.query(
++      "UPDATE auth.users SET email = NULL WHERE id = $1::uuid",
++      ["6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const nullUpdatedProfile = await db.query(`
++      SELECT email, role::text, active
++      FROM public.profiles
++      WHERE user_id = '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f';
++    `);
++    assert.deepEqual(nullUpdatedProfile.rows[0], {
++      email: null,
++      role: "admin",
++      active: true,
++    });
++
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", "", "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const nullEmailAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(nullEmailAuthorization.rows[0].authorized, true);
++    await db.exec("RESET ROLE");
++
++    await db.query(
++      "UPDATE auth.users SET email = $1 WHERE id = $2::uuid",
++      [EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const restoredProfile = await db.query(`
++      SELECT email, role::text, active
++      FROM public.profiles
++      WHERE user_id = '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f';
++    `);
++    assert.deepEqual(restoredProfile.rows[0], {
++      email: EMAILS.first,
++      role: "admin",
++      active: true,
++    });
++
++    const authorizationHelper = await db.query(`
++      SELECT p.prosecdef AS security_definer,
++        pg_catalog.pg_get_userbyid(p.proowner) AS owner,
++        p.proconfig AS settings,
++        pg_catalog.pg_get_functiondef(p.oid) AS definition,
++        pg_catalog.has_function_privilege('authenticated', p.oid, 'EXECUTE') AS authenticated_execute,
++        pg_catalog.has_function_privilege('anon', p.oid, 'EXECUTE') AS anon_execute,
++        EXISTS (
++          SELECT 1
++          FROM pg_catalog.aclexplode(
++            COALESCE(p.proacl, pg_catalog.acldefault('f', p.proowner))
++          ) acl
++          WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
++        ) AS public_execute
++      FROM pg_catalog.pg_proc p
++      JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
++      WHERE n.nspname = 'public'
++        AND p.proname = 'is_authorized_admin_user';
++    `);
++    assert.equal(authorizationHelper.rows.length, 1);
++    assert.equal(authorizationHelper.rows[0].security_definer, true);
++    assert.equal(authorizationHelper.rows[0].owner, "postgres");
++    assert.deepEqual(authorizationHelper.rows[0].settings, ['search_path=""']);
++    assert.equal(authorizationHelper.rows[0].authenticated_execute, true);
++    assert.equal(authorizationHelper.rows[0].anon_execute, false);
++    assert.equal(authorizationHelper.rows[0].public_execute, false);
++    assert.match(
++      authorizationHelper.rows[0].definition,
++      /6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f/i,
++    );
++    assert.match(
++      authorizationHelper.rows[0].definition,
++      /d2914556-10a7-4954-8ee0-8cdbdb649830/i,
++    );
++    assert.doesNotMatch(authorizationHelper.rows[0].definition, /auth\.email\(\)/i);
++
++    const signupFunction = await db.query(`
++      SELECT pg_catalog.pg_get_functiondef(
++        'public.handle_new_user()'::regprocedure
++      ) AS definition;
++    `);
++    assert.match(
++      signupFunction.rows[0].definition,
++      /6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f/i,
++    );
++    assert.match(
++      signupFunction.rows[0].definition,
++      /d2914556-10a7-4954-8ee0-8cdbdb649830/i,
++    );
++    assert.doesNotMatch(
++      signupFunction.rows[0].definition,
++      /solar\.disunenergy@gmail\.com|mhdsharookh@gmail\.com/i,
++    );
++
++    const profileRls = await db.query(`
++      SELECT
++        pg_catalog.pg_get_userbyid(c.relowner) AS owner,
++        c.relrowsecurity AS rls_enabled,
++        c.relforcerowsecurity AS force_rls
++      FROM pg_catalog.pg_class c
++      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
++      WHERE n.nspname = 'public' AND c.relname = 'profiles';
++    `);
++    assert.deepEqual(profileRls.rows[0], {
++      owner: "postgres",
++      rls_enabled: true,
++      force_rls: false,
++    });
++
+     const unauthorizedProfile = await db.query(`
+       SELECT role::text, active FROM public.profiles WHERE email = '${EMAILS.unauthorized}';
+     `);
+@@ -770,6 +993,43 @@ async function main() {
+       assert.equal(row.anon_select, false, `${row.table_name}: anon must not read`);
+     }
+ 
++    const profilePrivileges = await db.query(`
++      SELECT
++        has_table_privilege('authenticated', 'public.profiles', 'SELECT') AS authenticated_select,
++        has_table_privilege('authenticated', 'public.profiles', 'UPDATE') AS authenticated_table_update,
++        has_column_privilege('authenticated', 'public.profiles', 'full_name', 'UPDATE') AS authenticated_full_name_update,
++        has_column_privilege('authenticated', 'public.profiles', 'role', 'UPDATE') AS authenticated_role_update,
++        has_column_privilege('authenticated', 'public.profiles', 'active', 'UPDATE') AS authenticated_active_update,
++        has_table_privilege('anon', 'public.profiles', 'UPDATE') AS anon_table_update,
++        has_column_privilege('anon', 'public.profiles', 'full_name', 'UPDATE') AS anon_full_name_update,
++        has_column_privilege('anon', 'public.profiles', 'role', 'UPDATE') AS anon_role_update,
++        has_column_privilege('anon', 'public.profiles', 'active', 'UPDATE') AS anon_active_update;
++    `);
++    assert.deepEqual(profilePrivileges.rows[0], {
++      authenticated_select: true,
++      authenticated_table_update: false,
++      authenticated_full_name_update: true,
++      authenticated_role_update: true,
++      authenticated_active_update: true,
++      anon_table_update: false,
++      anon_full_name_update: false,
++      anon_role_update: false,
++      anon_active_update: false,
++    });
++
++    const profileUpdatePolicy = await db.query(`
++      SELECT roles, cmd, qual, with_check
++      FROM pg_catalog.pg_policies
++      WHERE schemaname = 'public'
++        AND tablename = 'profiles'
++        AND policyname = 'profiles_update_admin';
++    `);
++    assert.equal(profileUpdatePolicy.rows.length, 1);
++    assert.deepEqual(profileUpdatePolicy.rows[0].roles, ["authenticated"]);
++    assert.equal(profileUpdatePolicy.rows[0].cmd, "UPDATE");
++    assert.match(profileUpdatePolicy.rows[0].qual, /is_authorized_admin_user/i);
++    assert.match(profileUpdatePolicy.rows[0].with_check, /is_authorized_admin_user/i);
++
+     const functionConfigs = await db.query(`
+       SELECT p.proname, p.proconfig,
+         p.prosecdef AS security_definer,
+@@ -779,14 +1039,14 @@ async function main() {
+       JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'public'
+         AND p.proname IN (
+-          'current_app_role', 'set_updated_at', 'is_trusted_db_role',
++          'current_app_role', 'is_authorized_admin_user', 'set_updated_at', 'is_trusted_db_role',
+           'customers_guard', 'activity_logs_block_mutation',
+           'enqueue_customer_sync', 'log_change', 'protect_last_admin',
+           'handle_new_user', 'create_customer', 'search_customers',
+           'set_contract_value'
+         );
+     `);
+-    assert.equal(functionConfigs.rows.length, 12);
++    assert.equal(functionConfigs.rows.length, 13);
+     for (const fn of functionConfigs.rows) {
+       assert(
+         fn.proconfig?.some((config) => config.startsWith("search_path=")),
+@@ -797,6 +1057,12 @@ async function main() {
+     assert.equal(guard.security_definer, true);
+     assert.equal(guard.owner, "postgres");
+     assert.equal(guard.authenticated_can_execute, false);
++    const authorizationFn = functionConfigs.rows.find(
++      (fn) => fn.proname === "is_authorized_admin_user",
++    );
++    assert.equal(authorizationFn.security_definer, true);
++    assert.equal(authorizationFn.owner, "postgres");
++    assert.equal(authorizationFn.authenticated_can_execute, true);
+     const guardDefinition = await db.query(`
+       SELECT pg_catalog.pg_get_functiondef('public.customers_guard()'::regprocedure) AS definition;
+     `);
+@@ -864,11 +1130,78 @@ async function main() {
+     await db.exec("SET ROLE authenticated");
+     await db.query(
+       "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
+-      ["authenticated", EMAILS.first, "11111111-1111-4111-8111-111111111111"],
++      ["authenticated", EMAILS.second, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
+     );
+ 
+     const visibleProfiles = await db.query("SELECT count(*)::int AS count FROM public.profiles");
+     assert.equal(visibleProfiles.rows[0].count, 3);
++    const firstAdminAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(firstAdminAuthorization.rows[0].authorized, true);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.sub', $1, false)",
++      ["99999999-9999-4999-8999-999999999999"],
++    );
++    const missingProfileAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(missingProfileAuthorization.rows[0].authorized, false);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.first, "d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    const firstEmailSecondUserAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(firstEmailSecondUserAuthorization.rows[0].authorized, true);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.second, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const secondEmailFirstUserAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(secondEmailFirstUserAuthorization.rows[0].authorized, true);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.second, "d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    const secondAdminAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(secondAdminAuthorization.rows[0].authorized, true);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++
++    await db.query(
++      "UPDATE public.profiles SET role = 'staff' WHERE user_id = $1::uuid",
++      ["d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.second, "d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    const nonAdminRoleAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(nonAdminRoleAuthorization.rows[0].authorized, false);
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    await db.query(
++      "UPDATE public.profiles SET role = 'admin' WHERE user_id = $1::uuid",
++      ["d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++
+     await assert.rejects(
+       db.query("SELECT public.customers_guard()"),
+       /permission denied|trigger functions can only be called as triggers/i,
+@@ -897,7 +1230,157 @@ async function main() {
+     assert.equal(customer.rows[0].customer_code, "CUST-0001");
+     assert.equal(customer.rows[0].name, "Exact Behavior");
+     assert.equal(Number(customer.rows[0].contract_value), 1200);
+-    assert.equal(customer.rows[0].created_by, "11111111-1111-4111-8111-111111111111");
++    assert.equal(customer.rows[0].created_by, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f");
++
++    const unauthorizedIdentityCases = [
++      {
++        email: EMAILS.first,
++        subject: "33333333-3333-4333-8333-333333333333",
++      },
++      {
++        email: EMAILS.second,
++        subject: "55555555-5555-4555-8555-555555555555",
++      },
++    ];
++    for (const testCase of unauthorizedIdentityCases) {
++      await db.query(
++        "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++        [testCase.email, testCase.subject],
++      );
++      const unauthorizedIdentityCustomers = await db.query(
++        "SELECT id FROM public.customers",
++      );
++      assert.equal(unauthorizedIdentityCustomers.rows.length, 0);
++
++      const unauthorizedIdentityUpdate = await db.query(
++        "UPDATE public.customers SET name = 'Unauthorized Identity Change' WHERE id = $1 RETURNING id",
++        [customerId],
++      );
++      assert.equal(unauthorizedIdentityUpdate.rows.length, 0);
++      await assert.rejects(
++        db.query("INSERT INTO public.customers (name) VALUES ('Unauthorized Identity Insert')"),
++        /row-level security|not authorized/i,
++      );
++    }
++
++    await db.exec("RESET ROLE");
++    const crossIdentityUnchangedCustomer = await db.query(
++      "SELECT name FROM public.customers WHERE id = $1",
++      [customerId],
++    );
++    assert.equal(crossIdentityUnchangedCustomer.rows[0].name, "Exact Behavior");
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.second, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const uuidAdminSeesCustomerWithMismatchedEmail = await db.query(
++      "SELECT count(*)::int AS count FROM public.customers",
++    );
++    assert.equal(uuidAdminSeesCustomerWithMismatchedEmail.rows[0].count, 1);
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.unauthorized, "33333333-3333-4333-8333-333333333333"],
++    );
++    const nonAdminProfileMutation = await db.query(
++      "UPDATE public.profiles SET role = 'admin', active = true WHERE user_id = $1::uuid RETURNING user_id",
++      ["33333333-3333-4333-8333-333333333333"],
++    );
++    assert.equal(nonAdminProfileMutation.rows.length, 0);
++    await db.exec("RESET ROLE");
++    const unchangedNonAdminProfile = await db.query(`
++      SELECT role::text, active
++      FROM public.profiles
++      WHERE user_id = '33333333-3333-4333-8333-333333333333';
++    `);
++    assert.deepEqual(unchangedNonAdminProfile.rows[0], {
++      role: "staff",
++      active: false,
++    });
++
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++
++    await db.query(
++      "UPDATE public.profiles SET active = false WHERE user_id = $1::uuid",
++      ["d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.second, "d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    const inactiveAdminAuthorization = await db.query(
++      "SELECT public.is_authorized_admin_user() AS authorized",
++    );
++    assert.equal(inactiveAdminAuthorization.rows[0].authorized, false);
++    const inactiveProfileMutation = await db.query(
++      "UPDATE public.profiles SET role = 'staff', active = true WHERE user_id = $1::uuid RETURNING user_id",
++      ["d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    assert.equal(inactiveProfileMutation.rows.length, 0);
++    const inactiveAdminUpdate = await db.query(
++      "UPDATE public.customers SET name = 'Inactive Admin Change' WHERE id = $1 RETURNING id",
++      [customerId],
++    );
++    assert.equal(inactiveAdminUpdate.rows.length, 0);
++    await assert.rejects(
++      db.query("INSERT INTO public.customers (name) VALUES ('Inactive Admin Insert')"),
++      /row-level security|not authorized/i,
++    );
++    await db.exec("RESET ROLE");
++    const unchangedInactiveAdminProfile = await db.query(`
++      SELECT role::text, active
++      FROM public.profiles
++      WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
++    `);
++    assert.deepEqual(unchangedInactiveAdminProfile.rows[0], {
++      role: "admin",
++      active: false,
++    });
++    await db.exec("SET ROLE authenticated");
++
++    await db.query(
++      "SELECT set_config('request.jwt.claim.email', $1, false), set_config('request.jwt.claim.sub', $2, false)",
++      [EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    const activeAdminUpdate = await db.query(
++      "UPDATE public.customers SET name = name WHERE id = $1 RETURNING id",
++      [customerId],
++    );
++    assert.equal(activeAdminUpdate.rows.length, 1);
++    await db.query(
++      "UPDATE public.profiles SET active = true WHERE user_id = $1::uuid",
++      ["d2914556-10a7-4954-8ee0-8cdbdb649830"],
++    );
++    await db.exec("RESET ROLE");
++
++    await db.exec("SET ROLE anon");
++    await assert.rejects(
++      db.query(
++        "UPDATE public.profiles SET role = 'admin', active = true WHERE user_id = $1::uuid",
++        ["33333333-3333-4333-8333-333333333333"],
++      ),
++      /permission denied/i,
++    );
++    await db.exec("RESET ROLE");
++    const unchangedAfterAnonProfileMutation = await db.query(`
++      SELECT role::text, active
++      FROM public.profiles
++      WHERE user_id = '33333333-3333-4333-8333-333333333333';
++    `);
++    assert.deepEqual(unchangedAfterAnonProfileMutation.rows[0], {
++      role: "staff",
++      active: false,
++    });
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
+ 
+     const details = await db.query(
+       "SELECT place, phone, consumer_id, address FROM public.customer_details WHERE customer_id = $1",
+@@ -909,6 +1392,100 @@ async function main() {
+       consumer_id: "CID-1",
+       address: "Address",
+     });
++    const detailInsertAudit = await db.query(`
++      SELECT action, entity_type, entity_id
++      FROM public.activity_logs
++      WHERE entity_type = 'customer_details' AND entity_id = $1
++      ORDER BY id;
++    `, [customerId]);
++    assert.deepEqual(detailInsertAudit.rows, [{
++      action: "insert",
++      entity_type: "customer_details",
++      entity_id: customerId,
++    }]);
++
++    await db.exec("RESET ROLE");
++    await db.query(
++      "UPDATE public.sync_queue SET status = 'processing' WHERE entity_id = $1",
++      [customerId],
++    );
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
++    await db.query(
++      "UPDATE public.customer_details SET address = 'Updated Address' WHERE customer_id = $1",
++      [customerId],
++    );
++    const detailUpdateAudit = await db.query(`
++      SELECT action, entity_type, entity_id
++      FROM public.activity_logs
++      WHERE entity_type = 'customer_details' AND entity_id = $1
++      ORDER BY id;
++    `, [customerId]);
++    assert.deepEqual(
++      detailUpdateAudit.rows.map((row) => row.action),
++      ["insert", "update"],
++    );
++    assert(detailUpdateAudit.rows.every((row) => row.entity_type === "customer_details"));
++    const detailUpdateSync = await db.query(`
++      SELECT status::text
++      FROM public.sync_queue
++      WHERE entity_id = $1
++      ORDER BY id;
++    `, [customerId]);
++    assert.deepEqual(detailUpdateSync.rows.map((row) => row.status), [
++      "processing",
++      "pending",
++    ]);
++
++    await db.exec("RESET ROLE");
++    await db.query(
++      "UPDATE public.sync_queue SET status = 'processing' WHERE entity_id = $1 AND status = 'pending'",
++      [customerId],
++    );
++    const queueCountBeforeDetailDelete = await db.query(
++      "SELECT count(*)::int AS count FROM public.sync_queue WHERE entity_id = $1",
++      [customerId],
++    );
++    await db.exec("SET ROLE postgres");
++    await db.query(`
++      SELECT
++        set_config('request.jwt.claim.role', '', false),
++        set_config('request.jwt.claim.email', '', false),
++        set_config('request.jwt.claim.sub', '', false);
++    `);
++    await db.query(
++      "DELETE FROM public.customer_details WHERE customer_id = $1",
++      [customerId],
++    );
++    const detailDeleteAudit = await db.query(`
++      SELECT action, entity_type, entity_id
++      FROM public.activity_logs
++      WHERE entity_type = 'customer_details' AND entity_id = $1
++      ORDER BY id;
++    `, [customerId]);
++    assert.deepEqual(
++      detailDeleteAudit.rows.map((row) => row.action),
++      ["insert", "update", "delete"],
++    );
++    assert(detailDeleteAudit.rows.every((row) => row.entity_type === "customer_details"));
++    const queueCountAfterDetailDelete = await db.query(
++      "SELECT count(*)::int AS count FROM public.sync_queue WHERE entity_id = $1",
++      [customerId],
++    );
++    assert.equal(
++      queueCountAfterDetailDelete.rows[0].count,
++      queueCountBeforeDetailDelete.rows[0].count,
++      "deleting customer_details must not enqueue another sync job",
++    );
++    await db.exec("RESET ROLE");
++    await db.exec("SET ROLE authenticated");
++    await db.query(
++      "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
++      ["authenticated", EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
+ 
+     const search = await db.query(
+       "SELECT customer_code, total_count FROM public.search_customers($1, false, 'name', 'asc', 25, 0)",
+@@ -957,17 +1534,17 @@ async function main() {
+       "SELECT count(*)::int AS count FROM public.sync_queue WHERE entity_id = $1",
+       [customerId],
+     );
+-    assert.equal(syncRows.rows[0].count, 1);
++    assert.equal(syncRows.rows[0].count, 3);
+     const detailAudit = await db.query(`
+       SELECT count(*)::int AS count
+       FROM public.activity_logs
+-      WHERE entity_type = 'customer_detail' AND entity_id = $1;
++      WHERE entity_type = 'customer_details' AND entity_id = $1;
+     `, [customerId]);
+-    assert.equal(detailAudit.rows[0].count, 1);
++    assert.equal(detailAudit.rows[0].count, 3);
+     const auditAfter = await db.query(
+       "SELECT count(*)::int AS count FROM public.activity_logs",
+     );
+-    assert.equal(auditAfter.rows[0].count - auditBefore.rows[0].count, 9);
++    assert.equal(auditAfter.rows[0].count - auditBefore.rows[0].count, 13);
+     await db.exec("RESET ROLE");
+ 
+     await db.exec("SET ROLE anon");
+@@ -984,7 +1561,7 @@ async function main() {
+     await db.exec("SET ROLE authenticated");
+     await db.query(
+       "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
+-      ["authenticated", EMAILS.second, "22222222-2222-4222-8222-222222222222"],
++      ["authenticated", EMAILS.second, "d2914556-10a7-4954-8ee0-8cdbdb649830"],
+     );
+     const secondCreated = await db.query(
+       "SELECT (public.create_customer('Admin Two Customer', CURRENT_DATE, 0)).id::text AS id",
+@@ -1110,10 +1687,14 @@ async function main() {
+     );
+     await db.exec("RESET ROLE");
+ 
++    await db.query(
++      "UPDATE auth.users SET email = 'temporary-email-test@example.com' WHERE id = $1::uuid",
++      ["6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
+     await assert.rejects(
+       db.exec(`
+         INSERT INTO auth.users (id, email, raw_user_meta_data)
+-        VALUES ('44444444-4444-4444-8444-444444444444', '${EMAILS.unauthorized}', '{}');
++        VALUES ('44444444-4444-4444-8444-444444444444', '${EMAILS.first}', '{}');
+       `),
+       /not authorized/i,
+     );
+@@ -1123,17 +1704,32 @@ async function main() {
+       WHERE id = '44444444-4444-4444-8444-444444444444';
+     `);
+     assert.equal(rejectedSignup.rows[0].count, 0);
++    await db.query(
++      "UPDATE auth.users SET email = $1 WHERE id = $2::uuid",
++      [EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
++    );
+ 
+-    console.log("PASS: literal plain-email allowlist values");
++    console.log("PASS: production Auth UUIDs, not test fixture IDs, define the admin allowlist");
+     console.log("PASS: migration applies twice without profile/audit/sync side effects");
+     console.log("PASS: customer RPC signatures and return contracts are preserved");
+     console.log("PASS: claim_sync_jobs and complete_sync_job definitions, defaults, owners, security settings, and restricted EXECUTE ACLs are unchanged");
+     console.log("PASS: RLS policies and table grants match all five live tables");
++    console.log("PASS: profile column UPDATE grants, table-level UPDATE denial, anon denial, and admin RLS policy");
++    console.log("PASS: profiles is postgres-owned with RLS enabled and FORCE RLS disabled");
++    console.log("PASS: approved UUID signup is independent of email; approved email alone cannot authorize a new UUID");
++    console.log("PASS: auth.users email and NULL updates synchronize profiles.email without changing role or active");
++    console.log("PASS: changed email is synchronized independently; UUID authorization ignores email claims");
++    console.log("PASS: authorization requires an allowlisted Auth UUID and matching active Admin profile");
++    console.log("PASS: non-allowlisted UUIDs are denied by customer SELECT, UPDATE, and INSERT policies despite approved email claims");
++    console.log("PASS: inactive admin cannot modify customers while the other active admin retains access");
++    console.log("PASS: non-admin and inactive-admin profile role/active changes are blocked by RLS");
++    console.log("PASS: anon profile role/active changes are blocked by table privileges");
+     console.log("PASS: all seven flagged functions have fixed search_path");
+     console.log("PASS: literal %, _, and backslash searches match only their intended customer records");
+     console.log("PASS: both approved admins create customers with consecutive numbers and update customer data");
+     console.log("PASS: direct serial allocation and trigger-function execution are denied");
+     console.log("PASS: activity and sync triggers record customer and details changes");
++    console.log("PASS: customer_details audit uses the exact plural entity type; INSERT and UPDATE enqueue, DELETE does not");
+     console.log("PASS: anonymous and authenticated sequence privileges are revoked");
+     console.log("PASS: unauthorized authenticated INSERT fails with SQLSTATE 42501 and the trigger denial message");
+     console.log("PASS: service_role JWT with no email can insert through the trigger and audit/sync remain functional");

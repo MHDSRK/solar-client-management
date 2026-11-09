@@ -5,20 +5,56 @@ CREATE OR REPLACE FUNCTION public.is_authorized_admin_user()
 RETURNS boolean
 LANGUAGE sql
 STABLE
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = ''
 AS $function$
-  SELECT pg_catalog.lower(pg_catalog.btrim(COALESCE(auth.email(), ''))) = ANY (
-    ARRAY[
-      'solar.disunenergy@gmail.com',
-      'mhdsharookh@gmail.com'
-    ]
-  );
+  SELECT
+    auth.uid() = ANY (
+      ARRAY[
+        '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+        'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+      ]
+    )
+    AND EXISTS (
+      SELECT 1
+      FROM public.profiles p
+      WHERE p.user_id = auth.uid()
+        AND p.active
+        AND p.role = 'admin'::public.app_role
+    );
 $function$;
 
+ALTER FUNCTION public.is_authorized_admin_user() OWNER TO postgres;
 REVOKE EXECUTE ON FUNCTION public.is_authorized_admin_user() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.is_authorized_admin_user()
   TO authenticated, service_role, postgres;
+
+CREATE OR REPLACE FUNCTION public.sync_profile_email_from_auth_user()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $function$
+BEGIN
+  UPDATE public.profiles
+  SET email = NEW.email
+  WHERE user_id = NEW.id
+    AND email IS DISTINCT FROM NEW.email;
+
+  RETURN NEW;
+END;
+$function$;
+
+ALTER FUNCTION public.sync_profile_email_from_auth_user() OWNER TO postgres;
+REVOKE EXECUTE ON FUNCTION public.sync_profile_email_from_auth_user()
+  FROM PUBLIC, anon, authenticated, service_role;
+GRANT EXECUTE ON FUNCTION public.sync_profile_email_from_auth_user() TO postgres;
+
+DROP TRIGGER IF EXISTS auth_users_sync_profile_email ON auth.users;
+CREATE TRIGGER auth_users_sync_profile_email
+  AFTER UPDATE OF email ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION public.sync_profile_email_from_auth_user();
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger
@@ -27,11 +63,11 @@ SECURITY DEFINER
 SET search_path = ''
 AS $function$
 BEGIN
-  IF pg_catalog.lower(pg_catalog.btrim(COALESCE(NEW.email, ''))) <> ALL (
+  IF NEW.id <> ALL (
     ARRAY[
-      'solar.disunenergy@gmail.com',
-      'mhdsharookh@gmail.com'
-    ]
+      '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+      'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+    ]::uuid[]
   ) THEN
     RAISE EXCEPTION 'This account is not authorized for the Solar Client Management portal.'
       USING ERRCODE = '42501';
@@ -61,11 +97,11 @@ BEGIN
   UPDATE public.profiles
   SET role = 'staff'::public.app_role,
       active = false
-  WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
+  WHERE user_id <> ALL (
       ARRAY[
-        'solar.disunenergy@gmail.com',
-        'mhdsharookh@gmail.com'
-      ]
+        '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+        'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+      ]::uuid[]
     )
     AND (role <> 'staff'::public.app_role OR active)
     AND EXISTS (
@@ -73,11 +109,11 @@ BEGIN
       FROM public.profiles p
       WHERE p.role = 'admin'::public.app_role
         AND p.active
-        AND pg_catalog.lower(pg_catalog.btrim(COALESCE(p.email, ''))) = ANY (
+        AND p.user_id = ANY (
           ARRAY[
-            'solar.disunenergy@gmail.com',
-            'mhdsharookh@gmail.com'
-          ]
+            '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+            'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+          ]::uuid[]
         )
     );
 
@@ -321,11 +357,11 @@ SELECT
   'admin'::public.app_role,
   true
 FROM auth.users u
-WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(u.email, ''))) = ANY (
+WHERE u.id = ANY (
   ARRAY[
-    'solar.disunenergy@gmail.com',
-    'mhdsharookh@gmail.com'
-  ]
+    '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+    'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+  ]::uuid[]
 )
 ON CONFLICT (user_id) DO UPDATE
 SET full_name = COALESCE(EXCLUDED.full_name, public.profiles.full_name),
@@ -341,11 +377,11 @@ WHERE public.profiles.full_name IS DISTINCT FROM EXCLUDED.full_name
 UPDATE public.profiles
 SET role = 'staff'::public.app_role,
     active = false
-WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
+WHERE user_id <> ALL (
     ARRAY[
-      'solar.disunenergy@gmail.com',
-      'mhdsharookh@gmail.com'
-    ]
+      '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+      'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+    ]::uuid[]
   )
   AND (role <> 'staff'::public.app_role OR active)
   AND EXISTS (
@@ -353,11 +389,11 @@ WHERE pg_catalog.lower(pg_catalog.btrim(COALESCE(email, ''))) <> ALL (
     FROM public.profiles p
     WHERE p.role = 'admin'::public.app_role
       AND p.active
-      AND pg_catalog.lower(pg_catalog.btrim(COALESCE(p.email, ''))) = ANY (
+      AND p.user_id = ANY (
         ARRAY[
-          'solar.disunenergy@gmail.com',
-          'mhdsharookh@gmail.com'
-        ]
+          '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f'::uuid,
+          'd2914556-10a7-4954-8ee0-8cdbdb649830'::uuid
+        ]::uuid[]
       )
   );
 
@@ -430,6 +466,7 @@ CREATE POLICY sync_queue_select ON public.sync_queue
 REVOKE ALL ON TABLE public.profiles, public.customers, public.customer_details,
   public.activity_logs, public.sync_queue FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON TABLE public.profiles TO authenticated;
+GRANT UPDATE (full_name, role, active) ON TABLE public.profiles TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.customers TO authenticated;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.customer_details TO authenticated;
 GRANT SELECT ON TABLE public.activity_logs, public.sync_queue TO authenticated;
