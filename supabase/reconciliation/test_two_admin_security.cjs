@@ -7,6 +7,10 @@ const DRAFT_PATH = resolve(
   __dirname,
   "20261105125000_two_admin_security.sql",
 );
+const COMPENSATING_DRAFT_PATH = resolve(
+  __dirname,
+  "compensating_two_admin_security.sql",
+);
 const EMAILS = {
   first: "solar.disunenergy@gmail.com",
   second: "mhdsharookh@gmail.com",
@@ -152,6 +156,22 @@ async function captureRollbackState(db) {
     ) AS rows
     FROM public.sync_queue row_data;
   `);
+  const sequences = await db.query(`
+    SELECT 'activity_logs_id_seq' AS name, last_value::text, is_called
+    FROM public.activity_logs_id_seq
+    UNION ALL
+    SELECT 'customer_serial_seq', last_value::text, is_called
+    FROM public.customer_serial_seq
+    UNION ALL
+    SELECT 'sync_queue_id_seq', last_value::text, is_called
+    FROM public.sync_queue_id_seq
+    ORDER BY name;
+  `);
+  const migrationLedger = await db.query(`
+    SELECT version, name
+    FROM supabase_migrations.schema_migrations
+    ORDER BY version;
+  `);
 
   return {
     functions: functions.rows,
@@ -163,6 +183,8 @@ async function captureRollbackState(db) {
     profiles: profiles.rows,
     audit: audit.rows,
     syncQueue: syncQueue.rows,
+    sequences: sequences.rows,
+    migrationLedger: migrationLedger.rows,
   };
 }
 
@@ -170,6 +192,12 @@ const liveSchema = `
   CREATE ROLE anon NOLOGIN;
   CREATE ROLE authenticated NOLOGIN;
   CREATE ROLE service_role NOLOGIN BYPASSRLS;
+  CREATE SCHEMA supabase_migrations;
+  CREATE TABLE supabase_migrations.schema_migrations (
+    version text PRIMARY KEY,
+    statements text[],
+    name text
+  );
   DO $$
   BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
@@ -712,6 +740,7 @@ async function main() {
   );
 
   const draft = readFileSync(DRAFT_PATH, "utf8");
+  const compensatingDraft = readFileSync(COMPENSATING_DRAFT_PATH, "utf8");
   const db = new PGlite();
   try {
     await db.exec(liveSchema);
@@ -1947,7 +1976,11 @@ async function main() {
   await testProfileRollback(draft);
   console.log("PASS: rollback restores the pre-deployment inactive Staff profile while retaining the other active Admin");
   await testAtomicRollback(draft);
-  console.log("PASS: transaction rollback restores function definitions/owners/settings/ACLs, table/column grants and RLS, triggers, indexes, profiles, audit, and sync data");
+  console.log("PASS: transaction rollback restores catalog and row data; expected non-transactional audit sequence advancement is verified separately");
+  await testCompensatingMigration(draft, compensatingDraft);
+  console.log("PASS: compensating migration restores policies, grants, triggers, function metadata, and index while preserving customer/email/audit data");
+  console.log("PASS: compensating profile restoration retains an audit trail and does not reset sequence values");
+  console.log("PASS: compensating migration aborts on unexpected profile state and a later transactional failure leaves no partial database changes");
 }
 
 async function testNoApprovedAdminState(draft) {
@@ -2068,9 +2101,403 @@ async function testAtomicRollback(draft) {
     await db.exec("ROLLBACK");
 
     const after = await captureRollbackState(db);
-    assert.deepEqual(after, before);
+    const { sequences: beforeSequences, ...beforeTransactionalState } = before;
+    const { sequences: afterSequences, ...afterTransactionalState } = after;
+    assert.deepEqual(afterTransactionalState, beforeTransactionalState);
+
+    const beforeSequenceByName = new Map(
+      beforeSequences.map((sequence) => [sequence.name, sequence]),
+    );
+    const afterSequenceByName = new Map(
+      afterSequences.map((sequence) => [sequence.name, sequence]),
+    );
+    assert.deepEqual(
+      afterSequenceByName.get("activity_logs_id_seq"),
+      {
+        name: "activity_logs_id_seq",
+        last_value: String(
+          Number(beforeSequenceByName.get("activity_logs_id_seq").last_value) + 1,
+        ),
+        is_called: true,
+      },
+      "profile audit sequence advancement survives transaction rollback",
+    );
+    for (const sequenceName of ["customer_serial_seq", "sync_queue_id_seq"]) {
+      assert.deepEqual(
+        afterSequenceByName.get(sequenceName),
+        beforeSequenceByName.get(sequenceName),
+        `${sequenceName} should not advance during this migration rollback test`,
+      );
+    }
   } finally {
     await db.close();
+  }
+}
+
+async function seedRecoveryScenario(db) {
+  await db.exec(liveSchema);
+  await db.exec(`
+    ALTER FUNCTION public.set_updated_at() SET search_path = '';
+    ALTER FUNCTION public.is_trusted_db_role() SET search_path = '';
+    ALTER FUNCTION public.current_app_role() SET search_path = '';
+    ALTER FUNCTION public.customers_guard() SET search_path = '';
+    ALTER FUNCTION public.activity_logs_block_mutation() SET search_path = '';
+    ALTER FUNCTION public.create_customer(text, date, numeric, text, text, text, text, text)
+      SET search_path = '';
+    ALTER FUNCTION public.set_contract_value(uuid, numeric, text) SET search_path = '';
+    ALTER FUNCTION public.search_customers(text, boolean, text, text, integer, integer)
+      SET search_path = '';
+
+    REVOKE ALL ON FUNCTION public.set_updated_at(),
+      public.activity_logs_block_mutation(),
+      public.enqueue_customer_sync(),
+      public.log_change(),
+      public.protect_last_admin()
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.set_updated_at(),
+      public.activity_logs_block_mutation(),
+      public.enqueue_customer_sync(),
+      public.log_change(),
+      public.protect_last_admin()
+      TO postgres, service_role;
+    REVOKE ALL ON FUNCTION public.current_app_role()
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.current_app_role()
+      TO postgres, authenticated, service_role;
+    REVOKE ALL ON FUNCTION public.customers_guard()
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.customers_guard()
+      TO postgres, service_role;
+    REVOKE ALL ON FUNCTION public.handle_new_user()
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.handle_new_user()
+      TO postgres, service_role;
+    REVOKE ALL ON FUNCTION public.is_trusted_db_role()
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.is_trusted_db_role()
+      TO postgres, authenticated, service_role;
+    REVOKE ALL ON FUNCTION public.create_customer(text, date, numeric, text, text, text, text, text),
+      public.set_contract_value(uuid, numeric, text),
+      public.search_customers(text, boolean, text, text, integer, integer)
+      FROM PUBLIC, anon, authenticated, service_role;
+    GRANT EXECUTE ON FUNCTION public.create_customer(text, date, numeric, text, text, text, text, text),
+      public.set_contract_value(uuid, numeric, text),
+      public.search_customers(text, boolean, text, text, integer, integer)
+      TO postgres, authenticated, service_role;
+
+    REVOKE ALL PRIVILEGES ON SEQUENCE
+      public.activity_logs_id_seq,
+      public.customer_serial_seq,
+      public.sync_queue_id_seq
+      FROM PUBLIC, anon, authenticated;
+    GRANT USAGE, SELECT, UPDATE ON SEQUENCE
+      public.activity_logs_id_seq, public.sync_queue_id_seq
+      TO anon, authenticated;
+    GRANT USAGE, SELECT, UPDATE ON SEQUENCE
+      public.customer_serial_seq
+      TO authenticated;
+
+    DROP POLICY customer_details_insert ON public.customer_details;
+    DROP POLICY customer_details_update ON public.customer_details;
+    DROP POLICY activity_logs_select ON public.activity_logs;
+    CREATE POLICY customer_details_insert ON public.customer_details
+      FOR INSERT TO authenticated
+      WITH CHECK (
+        (SELECT public.current_app_role()) IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM public.customers c
+          WHERE c.id = customer_details.customer_id
+            AND c.archived_at IS NULL
+        )
+      );
+    CREATE POLICY customer_details_update ON public.customer_details
+      FOR UPDATE TO authenticated
+      USING (
+        (SELECT public.current_app_role()) IS NOT NULL
+        AND EXISTS (
+          SELECT 1
+          FROM public.customers c
+          WHERE c.id = customer_details.customer_id
+            AND (
+              c.archived_at IS NULL
+              OR (SELECT public.current_app_role()) = 'admin'
+            )
+        )
+      )
+      WITH CHECK ((SELECT public.current_app_role()) IS NOT NULL);
+    CREATE POLICY activity_logs_select ON public.activity_logs
+      FOR SELECT TO authenticated
+      USING (
+        (SELECT public.current_app_role()) IN ('admin', 'manager')
+      );
+  `);
+  await db.exec(`
+    INSERT INTO auth.users (id, email, raw_user_meta_data)
+    VALUES (
+      '6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f',
+      '${EMAILS.first}',
+      '{}'
+    );
+    INSERT INTO auth.users (id, email, raw_user_meta_data)
+    VALUES (
+      'd2914556-10a7-4954-8ee0-8cdbdb649830',
+      '${EMAILS.second}',
+      '{}'
+    );
+  `);
+}
+
+function withoutFunctionDefinitions(functions) {
+  return functions.map(({ definition, ...metadata }) => metadata);
+}
+
+function profileStateWithoutTimestamps(profiles) {
+  return profiles.map(({ created_at, updated_at, ...profile }) => profile);
+}
+
+function withoutTransactionWrapper(sql) {
+  const body = sql.replace(/^\s*BEGIN;\s*/i, "").replace(/\s*COMMIT;\s*$/i, "");
+  assert.notEqual(body, sql, "compensation must have explicit transaction boundaries");
+  return body;
+}
+
+async function testCompensatingMigration(candidate, compensating) {
+  const compensatingBody = withoutTransactionWrapper(compensating);
+  {
+    const db = new PGlite();
+    try {
+      await seedRecoveryScenario(db);
+      const before = await captureRollbackState(db);
+      await db.exec(candidate);
+
+      const promotedProfile = await db.query(`
+        SELECT role::text, active
+        FROM public.profiles
+        WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+      `);
+      assert.deepEqual(promotedProfile.rows[0], { role: "admin", active: true });
+      await db.query(
+        `INSERT INTO supabase_migrations.schema_migrations(version, name)
+         VALUES ('20261109165000', 'two_admin_security')`,
+      );
+      const candidateLedger = await db.query(`
+        SELECT version, name
+        FROM supabase_migrations.schema_migrations
+        ORDER BY version;
+      `);
+
+      await db.exec("SET ROLE authenticated");
+      await db.query(
+        "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
+        ["authenticated", EMAILS.first, "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
+      );
+      const createdCustomer = await db.query(`
+        SELECT (public.create_customer(
+          'Recovery Preserved Customer',
+          CURRENT_DATE,
+          0
+        )).id::text AS id;
+      `);
+      const customerId = createdCustomer.rows[0].id;
+      await db.exec("RESET ROLE");
+
+      await db.query(
+        "UPDATE auth.users SET email = $1 WHERE id = $2::uuid",
+        ["first.admin.updated@example.com", "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
+      );
+
+      const promotedState = await captureRollbackState(db);
+      await db.exec("BEGIN");
+      await db.exec(compensatingBody);
+      await assert.rejects(db.exec("SELECT 1 / 0"), /division by zero/i);
+      await db.exec("ROLLBACK");
+      const afterFailedTransaction = await captureRollbackState(db);
+      const { sequences: promotedSequences, ...promotedTransactionalState } = promotedState;
+      const { sequences: failedSequences, ...failedTransactionalState } = afterFailedTransaction;
+      assert.deepEqual(failedTransactionalState, promotedTransactionalState);
+      const promotedSequenceByName = new Map(
+        promotedSequences.map((sequence) => [sequence.name, sequence]),
+      );
+      const failedSequenceByName = new Map(
+        failedSequences.map((sequence) => [sequence.name, sequence]),
+      );
+      assert.equal(
+        Number(failedSequenceByName.get("activity_logs_id_seq").last_value),
+        Number(promotedSequenceByName.get("activity_logs_id_seq").last_value) + 1,
+        "the rolled-back profile audit still consumes an identity value",
+      );
+      for (const sequenceName of ["customer_serial_seq", "sync_queue_id_seq"]) {
+        assert.deepEqual(
+          failedSequenceByName.get(sequenceName),
+          promotedSequenceByName.get(sequenceName),
+        );
+      }
+
+      await db.exec(compensating);
+      const restored = await captureRollbackState(db);
+      assert.deepEqual(
+        withoutFunctionDefinitions(restored.functions),
+        withoutFunctionDefinitions(before.functions),
+      );
+      assert.deepEqual(restored.relations, before.relations);
+      assert.deepEqual(restored.columnAcls, before.columnAcls);
+      assert.deepEqual(restored.policies, before.policies);
+      assert.deepEqual(restored.triggers, before.triggers);
+      assert.deepEqual(restored.indexes, before.indexes);
+      assert.deepEqual(restored.migrationLedger, candidateLedger.rows);
+      assert.deepEqual(
+        profileStateWithoutTimestamps(restored.profiles).map(
+          ({ email, ...profile }) => profile,
+        ),
+        profileStateWithoutTimestamps(before.profiles).map(
+          ({ email, ...profile }) => profile,
+        ),
+      );
+
+      const auditBefore = before.audit[0].rows;
+      const auditAfter = restored.audit[0].rows;
+      assert.equal(auditAfter.length, auditBefore.length + 5);
+      assert.deepEqual(auditAfter.slice(0, auditBefore.length), auditBefore);
+      assert.deepEqual(
+        auditAfter.slice(auditBefore.length).map((row) => row.action),
+        ["update", "insert", "insert", "update", "update"],
+      );
+      const baselineSequenceByName = new Map(
+        before.sequences.map((sequence) => [sequence.name, sequence]),
+      );
+      const restoredSequenceByName = new Map(
+        restored.sequences.map((sequence) => [sequence.name, sequence]),
+      );
+      assert.equal(
+        Number(restoredSequenceByName.get("activity_logs_id_seq").last_value),
+        Number(baselineSequenceByName.get("activity_logs_id_seq").last_value) + 6,
+      );
+      assert.equal(
+        Number(restoredSequenceByName.get("customer_serial_seq").last_value),
+        Number(baselineSequenceByName.get("customer_serial_seq").last_value),
+      );
+      assert.equal(restoredSequenceByName.get("customer_serial_seq").is_called, true);
+      assert.equal(
+        Number(restoredSequenceByName.get("sync_queue_id_seq").last_value),
+        Number(baselineSequenceByName.get("sync_queue_id_seq").last_value) + 1,
+      );
+      assert.equal(restoredSequenceByName.get("sync_queue_id_seq").is_called, true);
+
+      const restoredGuard = await db.query(`
+        SELECT prosecdef, proconfig, pg_catalog.pg_get_functiondef(oid) AS definition
+        FROM pg_catalog.pg_proc
+        WHERE oid = 'public.customers_guard()'::regprocedure;
+      `);
+      assert.equal(restoredGuard.rows[0].prosecdef, false);
+      assert.deepEqual(restoredGuard.rows[0].proconfig, ['search_path=""']);
+      assert.match(restoredGuard.rows[0].definition, /public\.current_app_role\(\)/i);
+
+      const restoredSignup = await db.query(`
+        SELECT pg_catalog.pg_get_functiondef(
+          'public.handle_new_user()'::regprocedure
+        ) AS definition;
+      `);
+      assert.match(restoredSignup.rows[0].definition, /is_first/i);
+      assert.doesNotMatch(
+        restoredSignup.rows[0].definition,
+        /6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f|d2914556-10a7-4954-8ee0-8cdbdb649830/i,
+      );
+
+      const emailSyncTrigger = await db.query(`
+        SELECT count(*)::int AS count
+        FROM pg_catalog.pg_trigger t
+        JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'auth'
+          AND c.relname = 'users'
+          AND t.tgname = 'auth_users_sync_profile_email'
+          AND NOT t.tgisinternal;
+      `);
+      assert.equal(emailSyncTrigger.rows[0].count, 0);
+
+      const preservedCustomer = await db.query(
+        "SELECT name FROM public.customers WHERE id = $1::uuid",
+        [customerId],
+      );
+      assert.deepEqual(preservedCustomer.rows[0], {
+        name: "Recovery Preserved Customer",
+      });
+      const preservedDetails = await db.query(
+        "SELECT customer_id::text FROM public.customer_details WHERE customer_id = $1::uuid",
+        [customerId],
+      );
+      assert.deepEqual(preservedDetails.rows[0], { customer_id: customerId });
+      const preservedEmails = await db.query(`
+        SELECT user_id::text, email
+        FROM public.profiles
+        ORDER BY user_id;
+      `);
+      assert.deepEqual(preservedEmails.rows, [
+        {
+          user_id: "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f",
+          email: "first.admin.updated@example.com",
+        },
+        {
+          user_id: "d2914556-10a7-4954-8ee0-8cdbdb649830",
+          email: EMAILS.second,
+        },
+      ]);
+
+      await db.exec("SET ROLE authenticated");
+      await db.query(
+        "SELECT set_config('request.jwt.claim.role', $1, false), set_config('request.jwt.claim.email', $2, false), set_config('request.jwt.claim.sub', $3, false)",
+        ["authenticated", "first.admin.updated@example.com", "6c613a5d-9bd6-4449-9cb3-cb0f1baf7e0f"],
+      );
+      const restoredSearch = await db.query(
+        "SELECT name FROM public.search_customers($1, false, 'name', 'asc', 25, 0)",
+        ["Recovery Preserved Customer"],
+      );
+      assert.deepEqual(restoredSearch.rows, [{
+        name: "Recovery Preserved Customer",
+      }]);
+    } finally {
+      await db.close();
+    }
+  }
+
+  {
+    const db = new PGlite();
+    try {
+      await seedRecoveryScenario(db);
+      await db.exec(candidate);
+      await db.exec(`
+        UPDATE public.profiles
+        SET role = 'staff'::public.app_role, active = false
+        WHERE user_id = 'd2914556-10a7-4954-8ee0-8cdbdb649830';
+      `);
+      const beforeRejectedRecovery = await captureRollbackState(db);
+
+      await db.exec("BEGIN");
+      await assert.rejects(
+        db.exec(compensatingBody),
+        /Forward candidate migration 20261109165000 is not recorded/i,
+      );
+      await db.exec("ROLLBACK");
+      assert.deepEqual(await captureRollbackState(db), beforeRejectedRecovery);
+
+      await db.query(
+        `INSERT INTO supabase_migrations.schema_migrations(version, name)
+         VALUES ('20261109165000', 'two_admin_security')`,
+      );
+      const beforeProfileMismatch = await captureRollbackState(db);
+      await db.exec("BEGIN");
+      await assert.rejects(
+        db.exec(compensatingBody),
+        /Profile state differs from the expected post-candidate state/i,
+      );
+      await db.exec("ROLLBACK");
+
+      const afterRejectedRecovery = await captureRollbackState(db);
+      assert.deepEqual(afterRejectedRecovery, beforeProfileMismatch);
+    } finally {
+      await db.close();
+    }
   }
 }
 
