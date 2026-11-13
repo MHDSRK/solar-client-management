@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { PGlite } = require("@electric-sql/pglite");
@@ -2249,11 +2250,29 @@ async function seedRecoveryScenario(db) {
 }
 
 function withoutFunctionDefinitions(functions) {
-  return functions.map(({ definition, ...metadata }) => metadata);
+  return functions.map((metadata) =>
+    Object.fromEntries(
+      Object.entries(metadata).filter(([key]) => key !== "definition"),
+    ),
+  );
 }
 
 function profileStateWithoutTimestamps(profiles) {
-  return profiles.map(({ created_at, updated_at, ...profile }) => profile);
+  return profiles.map((profile) =>
+    Object.fromEntries(
+      Object.entries(profile).filter(
+        ([key]) => key !== "created_at" && key !== "updated_at",
+      ),
+    ),
+  );
+}
+
+function profileStateWithoutEmail(profiles) {
+  return profiles.map((profile) =>
+    Object.fromEntries(
+      Object.entries(profile).filter(([key]) => key !== "email"),
+    ),
+  );
 }
 
 function withoutTransactionWrapper(sql) {
@@ -2347,12 +2366,8 @@ async function testCompensatingMigration(candidate, compensating) {
       assert.deepEqual(restored.indexes, before.indexes);
       assert.deepEqual(restored.migrationLedger, candidateLedger.rows);
       assert.deepEqual(
-        profileStateWithoutTimestamps(restored.profiles).map(
-          ({ email, ...profile }) => profile,
-        ),
-        profileStateWithoutTimestamps(before.profiles).map(
-          ({ email, ...profile }) => profile,
-        ),
+        profileStateWithoutEmail(profileStateWithoutTimestamps(restored.profiles)),
+        profileStateWithoutEmail(profileStateWithoutTimestamps(before.profiles)),
       );
 
       const auditBefore = before.audit[0].rows;

@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { Mail, MapPin, Phone, ReceiptText, User } from "lucide-react";
 import { customerDetails, formatCurrency } from "@/lib/site-data";
@@ -5,10 +6,28 @@ import { customerDetails, formatCurrency } from "@/lib/site-data";
 export default function CustomerDetailPage({
   params,
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  const { id } = params;
-  const customer = customerDetails.find((item) => item.id === id) ?? customerDetails[0];
+  return (
+    <Suspense
+      fallback={
+        <p role="status" className="text-sm text-slate-500">
+          Loading customer details…
+        </p>
+      }
+    >
+      <CustomerDetailContent params={params} />
+    </Suspense>
+  );
+}
+
+async function CustomerDetailContent({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await params;
+  const customer = customerDetails.find((item) => item.id === id);
 
   if (!customer) {
     notFound();
