@@ -9,11 +9,6 @@ import { createServerSupabaseClient } from "@/lib/supabase";
 export async function signInAction(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  const remember = formData.get("remember") === "on";
-
-  if (remember) {
-    // Keep the authentication state in the browser cookie store for the next session.
-  }
 
   if (!email || !password) {
     return { error: "Email and password are required." };

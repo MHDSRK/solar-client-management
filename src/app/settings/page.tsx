@@ -1,55 +1,64 @@
+import { AppShell } from "@/components/app-shell";
+
 const settingsCards = [
   {
     title: "Admin access",
-    description: "Only the approved solar administration accounts can sign in to this portal.",
-    status: "Restricted",
+    description: "Sign-in is limited to the approved administrator email allowlist. No manager or staff roles are enabled.",
+    status: "Code present",
+  },
+  {
+    title: "Customer database",
+    description: "Customer reads and writes are not implemented in this code-only version.",
+    status: "Unavailable",
   },
   {
     title: "Google Drive",
-    description: "Connect the approved operational account and review the linked customer document folders.",
-    status: "Planned",
+    description: "Drive folder linking, uploads, and document management are not implemented.",
+    status: "Unavailable",
   },
   {
     title: "Google Sheets",
-    description: "Check workbook connectivity and the sync queue for the customer and financial reporting flow.",
-    status: "Planned",
+    description: "Sheet synchronization, retry handling, and sync status are not implemented.",
+    status: "Unavailable",
   },
   {
     title: "Rate & pricing",
-    description: "Maintain approved rates and operational pricing for the solar project pipeline.",
-    status: "Active",
+    description: "Rate master records and pricing workflows are not connected to stored data.",
+    status: "Unavailable",
   },
 ];
 
 export default function SettingsPage() {
   return (
-    <div className="space-y-6">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <AppShell>
+      <header className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Administration</p>
         <h1 className="mt-1 text-2xl font-semibold text-slate-900">System Settings</h1>
         <p className="mt-2 text-sm leading-6 text-slate-600">
-          This portal is configured for two full-admin accounts only, with no additional staff or manager hierarchy.
+          This code-only version shows implementation status without exposing setup controls that do not work yet.
         </p>
-      </div>
+      </header>
 
-      <div className="grid gap-4 md:grid-cols-2">
+      <section aria-label="Feature implementation status" className="grid gap-4 md:grid-cols-2">
         {settingsCards.map((card) => (
-          <div key={card.title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-start justify-between gap-4">
+          <article key={card.title} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">{card.title}</h2>
                 <p className="mt-2 text-sm leading-6 text-slate-600">{card.description}</p>
               </div>
-              <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+              <span
+                className={[
+                  "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
+                  card.status === "Code present" ? "bg-slate-100 text-slate-700" : "bg-amber-100 text-amber-800",
+                ].join(" ")}
+              >
                 {card.status}
               </span>
             </div>
-            <button className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-700">
-              Configure
-            </button>
-          </div>
+          </article>
         ))}
-      </div>
-    </div>
+      </section>
+    </AppShell>
   );
 }
