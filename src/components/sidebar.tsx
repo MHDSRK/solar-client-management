@@ -1,13 +1,5 @@
 import Link from "next/link";
-import {
-  BarChart3,
-  Building2,
-  CreditCard,
-  FolderCog,
-  LayoutDashboard,
-  Settings,
-  SunMedium,
-} from "lucide-react";
+import { Building2, LayoutDashboard, Settings, SunMedium } from "lucide-react";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -17,59 +9,33 @@ const navItems = [
 
 export function Sidebar() {
   return (
-    <aside className="flex w-full max-w-[280px] flex-col border-r border-slate-200 bg-white/90 p-5 backdrop-blur">
-      <div className="mb-8 flex items-center gap-3">
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-900 text-amber-300">
-          <SunMedium className="h-5 w-5" />
+    <aside className="flex w-full flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)] lg:max-w-[280px] lg:flex-shrink-0 lg:rounded-2xl lg:p-5">
+      <div className="flex items-center gap-3">
+        <div className="flex size-11 items-center justify-center rounded-xl bg-slate-900 text-amber-300">
+          <SunMedium aria-hidden="true" className="size-5" />
         </div>
         <div>
           <p className="text-xs font-medium uppercase tracking-[0.2em] text-slate-500">Solar</p>
-          <h1 className="text-lg font-semibold text-slate-900">Client System</h1>
+          <p className="text-lg font-semibold text-slate-900">Client System</p>
         </div>
       </div>
 
-      <nav className="space-y-2">
+      <nav aria-label="Main navigation" className="grid grid-cols-3 gap-1 lg:flex lg:flex-col lg:gap-2">
         {navItems.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
-            className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900"
+            className="flex min-h-11 min-w-0 items-center justify-center gap-1 rounded-xl px-1 text-xs font-medium text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 sm:gap-2 sm:px-3 sm:text-sm lg:justify-start"
           >
-            <Icon className="h-4 w-4" />
+            <Icon aria-hidden="true" className="size-4" />
             {label}
           </Link>
         ))}
       </nav>
 
-      <div className="mt-auto rounded-2xl border border-slate-200 bg-slate-50 p-4">
-        <div className="mb-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
-          <FolderCog className="h-3.5 w-3.5" />
-          Operational
-        </div>
-        <div className="space-y-2 text-sm text-slate-600">
-          <div className="flex items-center justify-between">
-            <span>Drive</span>
-            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">Live</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span>Sheets</span>
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">Queued</span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span>Payments</span>
-            <span className="flex items-center gap-1 text-emerald-600">
-              <CreditCard className="h-3.5 w-3.5" />
-              98.4%
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span>Analytics</span>
-            <span className="flex items-center gap-1 text-sky-600">
-              <BarChart3 className="h-3.5 w-3.5" />
-              24h
-            </span>
-          </div>
-        </div>
+      <div className="mt-auto rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-5 text-slate-600">
+        <p className="font-medium text-slate-800">Business data unavailable</p>
+        <p className="mt-1">No sample records or operational status are displayed.</p>
       </div>
     </aside>
   );

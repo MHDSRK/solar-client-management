@@ -10,8 +10,8 @@ export function computeBalanceDue(contractValue: number, received: number): numb
   return contractValue - received;
 }
 
-export function computeProjectProfit(contractValue: number, actualExpenses: number): number {
-  return contractValue - actualExpenses;
+export function computeProjectProfit(received: number, actualExpenses: number): number {
+  return received - actualExpenses;
 }
 
 export function computeCashPosition(received: number, actualExpenses: number): number {
